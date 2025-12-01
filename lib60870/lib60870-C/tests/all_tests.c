@@ -37,6 +37,10 @@ struct sCS104_IPAddress
     eCS104_IPAddressType type;
 };
 
+/* declaration of library internal function */
+void
+InformationObject_setObjectAddress(InformationObject self, int ioa);
+
 static bool
 CS104_IPAddress_setFromString(CS104_IPAddress self, const char* ipAddrStr)
 {
@@ -187,9 +191,6 @@ extern "C" {
 
 void
 CS101_ASDU_encode(CS101_ASDU self, Frame frame);
-
-CS101_ASDU
-CS101_ASDU_createFromBuffer(CS101_AppLayerParameters parameters, uint8_t* msg, int msgLength);
 
 #ifdef __cplusplus
 }
@@ -938,17 +939,19 @@ test_CS104SlaveConnectionIsRedundancyGroup_enqueueThreadFunction(void* parameter
 
         CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
 
-          InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 110, scaledValue, IEC60870_QUALITY_GOOD);
+        InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 110, scaledValue, IEC60870_QUALITY_GOOD);
 
-          scaledValue++;
+        scaledValue++;
 
-          CS101_ASDU_addInformationObject(newAsdu, io);
+        CS101_ASDU_addInformationObject(newAsdu, io);
 
-          InformationObject_destroy(io);
+        InformationObject_destroy(io);
 
-          CS104_Slave_enqueueASDU(info->slave, newAsdu);
+        CS104_Slave_enqueueASDU(info->slave, newAsdu);
 
-          CS101_ASDU_destroy(newAsdu);
+        CS101_ASDU_destroy(newAsdu);
+
+        Thread_sleep(10);
     }
 
     return NULL;
@@ -1022,15 +1025,88 @@ test_CS104SlaveSingleRedundancyGroup()
 
         CS104_Connection_sendStartDT(con);
 
-        Thread_sleep(10);
-
         CS104_Connection_close(con);
+
+        Thread_sleep(10);
     }
 
     info.running = false;
     Thread_destroy(enqueueThread);
 
     CS104_Connection_destroy(con);
+
+    CS104_Slave_destroy(slave);
+}
+
+static void
+test_CS104SlaveSingleRedundancyGroupMultipleConnectionsEventHandler(void* parameter, IMasterConnection connection, CS104_PeerConnectionEvent event)
+{
+    char ipAddrBuf[100];
+    ipAddrBuf[0] = 0;
+
+    IMasterConnection_getPeerAddress(connection, ipAddrBuf, 100);
+}
+
+void
+test_CS104SlaveSingleRedundancyGroupMultipleConnections()
+{
+    CS104_Slave slave = CS104_Slave_create(100, 100);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+    CS104_Slave_setMaxOpenConnections(slave, 20);
+    CS104_Slave_setConnectionEventHandler(slave, test_CS104SlaveSingleRedundancyGroupMultipleConnectionsEventHandler, NULL);
+
+    struct test_CS104SlaveConnectionIsRedundancyGroup_Info info;
+    info.running = true;
+    info.slave = slave;
+
+    CS104_Connection cons[3];
+    int conState[3]; /* 0 = idle, 1 = connected, 2 = START_DT sent */
+
+    cons[0] = CS104_Connection_create("127.0.0.1", 20004);
+    cons[1] = CS104_Connection_create("127.0.0.1", 20004);
+    cons[2] = CS104_Connection_create("127.0.0.1", 20004);
+
+    conState[0] = 0;
+    conState[1] = 0;
+    conState[2] = 0;
+
+    Thread enqueueThread = Thread_create(test_CS104SlaveConnectionIsRedundancyGroup_enqueueThreadFunction, &info, false);
+    Thread_start(enqueueThread);
+
+    int i;
+    for (i = 0; i < 200; i++)
+    {
+       // printf("round %i\n", i);
+
+        int con = rand() % 3;
+
+        if (conState[con] == 0) {
+            bool result = CS104_Connection_connect(cons[con]);
+            TEST_ASSERT_TRUE(result);
+            conState[con] = 1;
+        }
+        else if (conState[con] == 1) {
+            CS104_Connection_sendStartDT(cons[con]);
+            conState[con] = 2;
+        }
+        else if (conState[con] == 2) {
+            CS104_Connection_close(cons[con]);
+            conState[con] = 0;
+        }
+
+        Thread_sleep(50);
+    }
+
+    CS104_Connection_destroy(cons[0]);
+    CS104_Connection_destroy(cons[1]);
+    CS104_Connection_destroy(cons[2]);
+
+    info.running = false;
+    Thread_destroy(enqueueThread);
 
     CS104_Slave_destroy(slave);
 }
@@ -1048,11 +1124,12 @@ test_CS104SlaveEventQueue1_asduReceivedHandler (void* parameter, int address, CS
 
     info->asduHandlerCalled++;
 
-    if (CS101_ASDU_getCOT(asdu) == CS101_COT_SPONTANEOUS) {
+    if (CS101_ASDU_getCOT(asdu) == CS101_COT_SPONTANEOUS)
+    {
         info->spontCount++;
 
-
-        if (CS101_ASDU_getTypeID(asdu) == M_ME_NB_1) {
+        if (CS101_ASDU_getTypeID(asdu) == M_ME_NB_1)
+        {
             static uint8_t ioBuf[250];
 
             MeasuredValueScaled mv = (MeasuredValueScaled) CS101_ASDU_getElementEx(asdu, (InformationObject) ioBuf, 0);
@@ -1800,6 +1877,85 @@ test_SinglePointInformation(void)
     CS101_ASDU_encode(asdu, f);
 
     TEST_ASSERT_EQUAL_INT(22, Frame_getMsgSize(f));
+
+    CS101_ASDU_destroy(asdu);
+
+    CS101_ASDU asdu2 = CS101_ASDU_createFromBuffer(&defaultAppLayerParameters, buffer, Frame_getMsgSize(f));
+
+    TEST_ASSERT_EQUAL_INT(4, CS101_ASDU_getNumberOfElements(asdu2));
+
+    SinglePointInformation spi1_dec = (SinglePointInformation) CS101_ASDU_getElement(asdu2, 0);
+    SinglePointInformation spi2_dec = (SinglePointInformation) CS101_ASDU_getElement(asdu2, 1);
+    SinglePointInformation spi3_dec = (SinglePointInformation) CS101_ASDU_getElement(asdu2, 2);
+    SinglePointInformation spi4_dec = (SinglePointInformation) CS101_ASDU_getElement(asdu2, 3);
+
+    TEST_ASSERT_EQUAL_INT(101, InformationObject_getObjectAddress((InformationObject)spi1_dec));
+    TEST_ASSERT_EQUAL_INT(102, InformationObject_getObjectAddress((InformationObject)spi2_dec));
+    TEST_ASSERT_EQUAL_INT(103, InformationObject_getObjectAddress((InformationObject)spi3_dec));
+    TEST_ASSERT_EQUAL_INT(104, InformationObject_getObjectAddress((InformationObject)spi4_dec));
+
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_INVALID, SinglePointInformation_getQuality(spi1_dec));
+    TEST_ASSERT_TRUE(SinglePointInformation_getValue(spi1_dec));
+
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_BLOCKED, SinglePointInformation_getQuality(spi2_dec));
+    TEST_ASSERT_FALSE(SinglePointInformation_getValue(spi2_dec));
+
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_GOOD, SinglePointInformation_getQuality(spi3_dec));
+    TEST_ASSERT_TRUE(SinglePointInformation_getValue(spi3_dec));
+
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_GOOD, SinglePointInformation_getQuality(spi4_dec));
+    TEST_ASSERT_FALSE(SinglePointInformation_getValue(spi4_dec));
+
+    SinglePointInformation_destroy(spi1_dec);
+    SinglePointInformation_destroy(spi2_dec);
+    SinglePointInformation_destroy(spi3_dec);
+    SinglePointInformation_destroy(spi4_dec);
+
+    CS101_ASDU_destroy(asdu2);
+}
+
+void
+test_SinglePointInformationSequence(void)
+{
+    SinglePointInformation spi1;
+    SinglePointInformation spi2;
+    SinglePointInformation spi3;
+    SinglePointInformation spi4;
+
+    spi1 = SinglePointInformation_create(NULL, 101, true, IEC60870_QUALITY_INVALID);
+    spi2 = SinglePointInformation_create(NULL, 102, false, IEC60870_QUALITY_BLOCKED);
+    spi3 = SinglePointInformation_create(NULL, 103, true, IEC60870_QUALITY_GOOD);
+
+    /* invalid quality bit (overflow) is expected to be ignored */
+    spi4 = SinglePointInformation_create(NULL, 104, false, IEC60870_QUALITY_OVERFLOW);
+
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_INVALID, SinglePointInformation_getQuality(spi1));
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_BLOCKED, SinglePointInformation_getQuality(spi2));
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_GOOD, SinglePointInformation_getQuality(spi3));
+    TEST_ASSERT_EQUAL_UINT8(IEC60870_QUALITY_GOOD, SinglePointInformation_getQuality(spi4));
+    TEST_ASSERT_TRUE(SinglePointInformation_getValue(spi1));
+
+    uint8_t buffer[256];
+
+    struct sBufferFrame bf;
+
+    Frame f = BufferFrame_initialize(&bf, buffer, 0);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, true, CS101_COT_PERIODIC, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) spi1);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) spi2);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) spi3);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) spi4);
+
+    SinglePointInformation_destroy(spi1);
+    SinglePointInformation_destroy(spi2);
+    SinglePointInformation_destroy(spi3);
+    SinglePointInformation_destroy(spi4);
+
+    CS101_ASDU_encode(asdu, f);
+
+    TEST_ASSERT_EQUAL_INT(13, Frame_getMsgSize(f));
 
     CS101_ASDU_destroy(asdu);
 
@@ -4788,6 +4944,86 @@ test_DelayAcquisitionCommand(void)
 
     CS101_ASDU_destroy(asdu2);
 }
+void
+test_TestCommand(void)
+{
+    TestCommand tc;
+    tc = TestCommand_create(NULL);
+
+    uint8_t buffer[256];
+    struct sBufferFrame bf;
+
+    Frame f = BufferFrame_initialize(&bf, buffer, 0);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+
+    TestCommand_destroy(tc);
+
+    CS101_ASDU_encode(asdu, f);
+
+    TEST_ASSERT_EQUAL_INT(11, Frame_getMsgSize(f));
+
+    CS101_ASDU_destroy(asdu);
+
+    CS101_ASDU asdu2 = CS101_ASDU_createFromBuffer(&defaultAppLayerParameters, buffer, Frame_getMsgSize(f));
+
+    TEST_ASSERT_EQUAL_INT(1, CS101_ASDU_getNumberOfElements(asdu2));
+
+    TestCommand tc_dec = (TestCommand) CS101_ASDU_getElement(asdu2, 0);
+
+    TEST_ASSERT_EQUAL_INT(0, InformationObject_getObjectAddress((InformationObject )tc_dec));
+    TEST_ASSERT_EQUAL_INT(0xaa, buffer[9]);
+    TEST_ASSERT_EQUAL_INT(0x55, buffer[10]);
+    TEST_ASSERT_TRUE(TestCommand_isValid(tc_dec));
+
+    TestCommand_destroy(tc_dec);
+
+    CS101_ASDU_destroy(asdu2);
+}
+
+void
+test_TestCommandWithTime(void)
+{
+    TestCommandWithCP56Time2a  tc;
+
+    uint64_t time1 = Hal_getTimeInMs();
+    struct sCP56Time2a cpTime1;
+    CP56Time2a_createFromMsTimestamp(&cpTime1, time1);
+
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+
+    uint8_t buffer[256];
+    struct sBufferFrame bf;
+
+    Frame f = BufferFrame_initialize(&bf, buffer, 0);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+
+    TestCommandWithCP56Time2a_destroy(tc);
+
+    CS101_ASDU_encode(asdu, f);
+
+    TEST_ASSERT_EQUAL_INT(18, Frame_getMsgSize(f));
+
+    CS101_ASDU_destroy(asdu);
+
+    CS101_ASDU asdu2 = CS101_ASDU_createFromBuffer(&defaultAppLayerParameters, buffer, Frame_getMsgSize(f));
+
+    TEST_ASSERT_EQUAL_INT(1, CS101_ASDU_getNumberOfElements(asdu2));
+
+    TestCommandWithCP56Time2a  tc_dec = (TestCommandWithCP56Time2a ) CS101_ASDU_getElement(asdu2, 0);
+
+    TEST_ASSERT_EQUAL_INT(0, InformationObject_getObjectAddress((InformationObject )tc_dec));
+    TEST_ASSERT_EQUAL_INT(0xaa55, TestCommandWithCP56Time2a_getCounter(tc_dec));
+
+    TestCommandWithCP56Time2a_destroy(tc_dec);
+
+    CS101_ASDU_destroy(asdu2);
+}
 
 void
 test_BitString32(void)
@@ -4967,6 +5203,134 @@ test_QueryLog(void)
 }
 
 void
+test_FileDirectory(void)
+{
+    FileDirectory fd1;
+    FileDirectory fd2;
+    FileDirectory fd3;
+
+    struct sCP56Time2a fileCreationTime;
+    uint64_t timeval = Hal_getTimeInMs();
+    CP56Time2a_createFromMsTimestamp(&fileCreationTime, timeval);
+
+    fd1 = FileDirectory_create(NULL, 100, 1, 1024, 0, &fileCreationTime);
+    fd2 = FileDirectory_create(NULL, 101, 2, 2048, 1, &fileCreationTime);
+    fd3 = FileDirectory_create(NULL, 102, 60001, 4444, 2, &fileCreationTime);
+
+    TEST_ASSERT_NOT_NULL(fd1);
+    TEST_ASSERT_NOT_NULL(fd2);
+    TEST_ASSERT_NOT_NULL(fd3);
+
+    TEST_ASSERT_EQUAL_UINT32(1024, FileDirectory_getLengthOfFile(fd1));
+
+    uint8_t buffer[256];
+
+    struct sBufferFrame bf;
+
+    Frame f = BufferFrame_initialize(&bf, buffer, 0);
+
+    /* NOTE: file directory is always a "sequence" */
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, true, CS101_COT_SPONTANEOUS, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) fd1);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) fd2);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) fd3);
+
+    FileDirectory_destroy(fd1);
+    FileDirectory_destroy(fd2);
+    FileDirectory_destroy(fd3);
+
+    CS101_ASDU_encode(asdu, f);
+
+    TEST_ASSERT_EQUAL_INT(48, Frame_getMsgSize(f));
+
+    CS101_ASDU_destroy(asdu);
+
+    CS101_ASDU asdu2 = CS101_ASDU_createFromBuffer(&defaultAppLayerParameters, buffer, Frame_getMsgSize(f));
+
+    TEST_ASSERT_EQUAL_INT(3, CS101_ASDU_getNumberOfElements(asdu2));
+
+    FileDirectory fd1_dec = (FileDirectory)CS101_ASDU_getElement(asdu2, 0);
+    FileDirectory fd2_dec = (FileDirectory)CS101_ASDU_getElement(asdu2, 1);
+    FileDirectory fd3_dec = (FileDirectory)CS101_ASDU_getElement(asdu2, 2);
+
+    TEST_ASSERT_NOT_NULL(fd1_dec);
+    TEST_ASSERT_NOT_NULL(fd2_dec);
+    TEST_ASSERT_NOT_NULL(fd3_dec);
+
+    TEST_ASSERT_EQUAL_UINT32(1024, FileDirectory_getLengthOfFile(fd1_dec));
+    TEST_ASSERT_EQUAL_UINT32(2048, FileDirectory_getLengthOfFile(fd2_dec));
+    TEST_ASSERT_EQUAL_UINT32(4444, FileDirectory_getLengthOfFile(fd3_dec));
+    TEST_ASSERT_EQUAL_INT(100, InformationObject_getObjectAddress((InformationObject)fd1_dec));
+    TEST_ASSERT_EQUAL_INT(101, InformationObject_getObjectAddress((InformationObject)fd2_dec));
+    TEST_ASSERT_EQUAL_INT(102, InformationObject_getObjectAddress((InformationObject)fd3_dec));
+    TEST_ASSERT_EQUAL_UINT8(0, FileDirectory_getSOF(fd1_dec));
+    TEST_ASSERT_EQUAL_UINT8(1, FileDirectory_getSOF(fd2_dec));
+    TEST_ASSERT_EQUAL_UINT8(2, FileDirectory_getSOF(fd3_dec));
+    TEST_ASSERT_EQUAL_UINT16(1, FileDirectory_getNOF(fd1_dec));
+    TEST_ASSERT_EQUAL_UINT16(2, FileDirectory_getNOF(fd2_dec));
+    TEST_ASSERT_EQUAL_UINT16(60001, FileDirectory_getNOF(fd3_dec));
+
+    FileDirectory_destroy(fd1_dec);
+    FileDirectory_destroy(fd2_dec);
+    FileDirectory_destroy(fd3_dec);
+
+    CS101_ASDU_destroy(asdu2);
+}
+
+void
+test_FileDirectorySingleEntry(void)
+{
+    FileDirectory fd1;
+
+    struct sCP56Time2a fileCreationTime;
+    uint64_t timeval = Hal_getTimeInMs();
+    CP56Time2a_createFromMsTimestamp(&fileCreationTime, timeval);
+
+    fd1 = FileDirectory_create(NULL, 101, 1, 1024, 0, &fileCreationTime);
+
+    TEST_ASSERT_NOT_NULL(fd1);
+
+    TEST_ASSERT_EQUAL_UINT32(1024, FileDirectory_getLengthOfFile(fd1));
+
+    uint8_t buffer[256];
+
+    struct sBufferFrame bf;
+
+    Frame f = BufferFrame_initialize(&bf, buffer, 0);
+
+    /* NOTE: file directory is always a "sequence" */
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, true, CS101_COT_SPONTANEOUS, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) fd1);
+
+    FileDirectory_destroy(fd1);
+
+    CS101_ASDU_encode(asdu, f);
+
+    TEST_ASSERT_EQUAL_INT(22, Frame_getMsgSize(f));
+
+    CS101_ASDU_destroy(asdu);
+
+    CS101_ASDU asdu2 = CS101_ASDU_createFromBuffer(&defaultAppLayerParameters, buffer, Frame_getMsgSize(f));
+
+    TEST_ASSERT_EQUAL_INT(1, CS101_ASDU_getNumberOfElements(asdu2));
+
+    FileDirectory fd1_dec = (FileDirectory)CS101_ASDU_getElement(asdu2, 0);
+
+    TEST_ASSERT_NOT_NULL(fd1_dec);
+
+    TEST_ASSERT_EQUAL_UINT32(1024, FileDirectory_getLengthOfFile(fd1_dec));
+    TEST_ASSERT_EQUAL_INT(101, InformationObject_getObjectAddress((InformationObject)fd1_dec));
+    TEST_ASSERT_EQUAL_UINT8(0, FileDirectory_getSOF(fd1_dec));
+    TEST_ASSERT_EQUAL_UINT16(1, FileDirectory_getNOF(fd1_dec));
+
+    FileDirectory_destroy(fd1_dec);
+
+    CS101_ASDU_destroy(asdu2);
+}
+
+void
 test_BitString32xx_encodeDecode(void)
 {
 #ifndef _WIN32
@@ -5023,7 +5387,7 @@ test_version_number(void)
 
     TEST_ASSERT_EQUAL_INT(2, version.major);
     TEST_ASSERT_EQUAL_INT(3, version.minor);
-    TEST_ASSERT_EQUAL_INT(2, version.patch);
+    TEST_ASSERT_EQUAL_INT(6, version.patch);
 }
 
 void
@@ -6339,6 +6703,570 @@ test_ASDUsetGetNumberOfElements(void)
     CS101_ASDU_destroy(asdu);
 }
 
+static uint8_t STARTDT_ACT_MSG[] = { 0x68, 0x04, 0x07, 0x00, 0x00, 0x00 };
+static uint8_t STOPDT_ACT_MSG[] = { 0x68, 0x04, 0x13, 0x00, 0x00, 0x00 };
+
+void
+test_CS104SlaveUnconfirmedStoppedMode()
+{
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    struct stest_CS104SlaveEventQueue1 info;
+    info.asduHandlerCalled = 0;
+    info.spontCount = 0;
+    info.lastScaledValue = 0;
+
+    int16_t scaledValue = 0;
+
+    for (int i = 0; i < 15; i++) {
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_SPONTANEOUS, 0, 1, false, false);
+
+        InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 110, scaledValue, IEC60870_QUALITY_GOOD);
+
+        scaledValue++;
+
+        CS101_ASDU_addInformationObject(newAsdu, io);
+
+        InformationObject_destroy(io);
+
+        CS104_Slave_enqueueASDU(slave, newAsdu);
+
+        CS101_ASDU_destroy(newAsdu);
+    }
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    CS104_Connection_setASDUReceivedHandler(con, test_CS104SlaveEventQueue1_asduReceivedHandler, &info);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_sendStartDT(con);
+
+    Thread_sleep(500);
+
+    CS104_Connection_sendStopDT(con);
+
+    CS104_Connection_close(con);
+
+    TEST_ASSERT_EQUAL_INT(14, info.lastScaledValue);
+
+    info.asduHandlerCalled = 0;
+    info.spontCount = 0;
+
+    result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_sendStartDT(con);
+
+    for (int i = 0; i < 6; i++)
+    {
+        Thread_sleep(10);
+
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_SPONTANEOUS, 0, 1, false, false);
+
+        InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 110, scaledValue, IEC60870_QUALITY_GOOD);
+
+        scaledValue++;
+
+        CS101_ASDU_addInformationObject(newAsdu, io);
+
+        InformationObject_destroy(io);
+
+        CS104_Slave_enqueueASDU(slave, newAsdu);
+
+        CS101_ASDU_destroy(newAsdu);
+    }
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_EQUAL_INT(6, CS104_Connection_sendMessage(con, STOPDT_ACT_MSG, sizeof(STOPDT_ACT_MSG)));
+
+    Thread_sleep(5000);
+
+    CS104_Connection_close(con);
+
+    TEST_ASSERT_EQUAL_INT(6, info.asduHandlerCalled);
+    TEST_ASSERT_EQUAL_INT(6, info.spontCount);
+    TEST_ASSERT_EQUAL_INT(20, info.lastScaledValue);
+
+    CS104_Connection_destroy(con);
+
+    CS104_Slave_destroy(slave);
+}
+
+#define SCALED_VALUE_MAX 32767
+#define SCALED_VALUE_MIN -32768
+#define NORMALIZED_VALUE_MAX (32767.f/32768.f)
+
+void
+test_ScaledNormalizedConversion()
+{
+    TEST_ASSERT_EQUAL_INT(32767, NormalizedValue_toScaled(NORMALIZED_VALUE_MAX));
+    TEST_ASSERT_EQUAL_INT(32767, NormalizedValue_toScaled(1.0f));
+    TEST_ASSERT_EQUAL_INT(32767, NormalizedValue_toScaled(2.0f));
+    TEST_ASSERT_EQUAL_INT(-32768, NormalizedValue_toScaled(-1.0f));
+    TEST_ASSERT_EQUAL_INT(-32768, NormalizedValue_toScaled(-2.0f));
+    TEST_ASSERT_EQUAL_INT(0, NormalizedValue_toScaled(0.0f));
+    TEST_ASSERT_EQUAL_INT(0, NormalizedValue_toScaled(-0.0f));
+
+    float normalizedUnit = (1.f - NORMALIZED_VALUE_MAX);
+
+    TEST_ASSERT_EQUAL_FLOAT(NORMALIZED_VALUE_MAX - normalizedUnit, NormalizedValue_fromScaled(32766));
+    TEST_ASSERT_EQUAL_FLOAT(NORMALIZED_VALUE_MAX, NormalizedValue_fromScaled(32767));
+    TEST_ASSERT_EQUAL_FLOAT(NORMALIZED_VALUE_MAX, NormalizedValue_fromScaled(32768));
+    TEST_ASSERT_EQUAL_FLOAT(NORMALIZED_VALUE_MAX, NormalizedValue_fromScaled(99999));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f + (normalizedUnit * 2.f), NormalizedValue_fromScaled(-32766));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f + normalizedUnit, NormalizedValue_fromScaled(-32767));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, NormalizedValue_fromScaled(-32768));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, NormalizedValue_fromScaled(-32769));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, NormalizedValue_fromScaled(0));
+}
+
+void
+test_CS104Connection_cannotWriteToSocketWhenNotConnected()
+{
+    /* test that the client does not crash when it tries to send a message after the connection is closed */
+
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_sendStartDT(con);
+
+    CS104_Slave_stop(slave);
+
+    Thread_sleep(500);
+
+    CS104_Connection_sendStopDT(con);
+
+    CS104_Connection_close(con);
+
+    CS104_Connection_destroy(con);
+
+    CS104_Slave_destroy(slave);
+}
+
+static bool
+test_CS104Slave_handleTestCommand_asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
+{
+    CS101_ASDU* receivedASDU = (CS101_ASDU*)parameter;
+
+    if (*receivedASDU != NULL)
+    {
+        CS101_ASDU_destroy(*receivedASDU);
+    }
+    
+    *receivedASDU = CS101_ASDU_clone(asdu, NULL);
+
+    return true;
+}
+
+void
+test_CS104Slave_handleTestCommandWithTimestamp()
+{
+    CS101_ASDU receivedASDU = NULL;
+
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_setASDUReceivedHandler(con, test_CS104Slave_handleTestCommand_asduReceivedHandler, &receivedASDU);
+
+    CS104_Connection_sendStartDT(con);
+
+    TestCommandWithCP56Time2a  tc;
+
+    uint64_t time1 = Hal_getTimeInMs();
+    struct sCP56Time2a cpTime1;
+    CP56Time2a_createFromMsTimestamp(&cpTime1, time1);
+
+    /* send correct test command */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_ACTIVATION_CON, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_FALSE(CS101_ASDU_isNegative(receivedASDU));
+
+    /* send test command with wrong COT */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION_CON, 0, 1, false, false);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_COT, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    /* send test command with correct COT but IOA != 0 */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+    InformationObject_setObjectAddress((InformationObject)tc, 2);
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION_CON, 0, 1, false, false);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_IOA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    /* send test command with wrong COT AND IOA != 0 */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+    InformationObject_setObjectAddress((InformationObject)tc, 2);
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION_TERMINATION, 0, 1, false, false);
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_IOA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    CS104_Connection_close(con);
+
+    CS104_Connection_destroy(con);
+
+    if (receivedASDU)
+        CS101_ASDU_destroy(receivedASDU);
+
+    CS104_Slave_destroy(slave);
+}
+
+void
+test_CS104Slave_rejectCommandsWithBroadcastCA()
+{
+    CS101_ASDU receivedASDU = NULL;
+
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_setASDUReceivedHandler(con, test_CS104Slave_handleTestCommand_asduReceivedHandler, &receivedASDU);
+
+    CS104_Connection_sendStartDT(con);
+
+    TestCommandWithCP56Time2a  tc;
+
+    uint64_t time1 = Hal_getTimeInMs();
+    struct sCP56Time2a cpTime1;
+    CP56Time2a_createFromMsTimestamp(&cpTime1, time1);
+
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+
+    /* send test command with CASDU = 65535 (broadcast)*/
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 65535, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_CA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    ReadCommand rc = ReadCommand_create(NULL, 100);
+
+    /* send read command with CASDU = 65535 (broadcast)*/
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 65535, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) rc);
+    ReadCommand_destroy(rc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_RD_NA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_CA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    struct sCP16Time2a cp16Time2a;
+    CP16Time2a_setEplapsedTimeInMs(&cp16Time2a, 1);
+
+    DelayAcquisitionCommand dac = DelayAcquisitionCommand_create(NULL, 0, &cp16Time2a);
+
+    /* send delay acquisition command with CASDU = 65535 (broadcast)*/
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 65535, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) dac);
+    DelayAcquisitionCommand_destroy(dac);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_CD_NA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_CA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    CS104_Connection_close(con);
+
+    CS104_Connection_destroy(con);
+
+    if (receivedASDU)
+        CS101_ASDU_destroy(receivedASDU);
+
+    CS104_Slave_destroy(slave);
+}
+
+static bool
+test_IsCAAllowedHandler(void* parameter, int ca)
+{
+    int expectedCa = *((int*)parameter);
+
+    return (expectedCa == ca);
+}
+
+void
+test_CS104Slave_rejectCommandWithUnknownCA()
+{
+    int expectedCa = 100;
+    CS101_ASDU receivedASDU = NULL;
+
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_setAllowedCAHandler(slave, test_IsCAAllowedHandler, &expectedCa);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_setASDUReceivedHandler(con, test_CS104Slave_handleTestCommand_asduReceivedHandler, &receivedASDU);
+
+    CS104_Connection_sendStartDT(con);
+
+    TestCommandWithCP56Time2a  tc;
+
+    uint64_t time1 = Hal_getTimeInMs();
+    struct sCP56Time2a cpTime1;
+    CP56Time2a_createFromMsTimestamp(&cpTime1, time1);
+
+    /* send test command with unknown CA */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_CA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    /* send test command with known CA */
+    tc = TestCommandWithCP56Time2a_create(NULL, 0xaa55, &cpTime1);
+
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, expectedCa, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) tc);
+    TestCommandWithCP56Time2a_destroy(tc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_TS_TA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_ACTIVATION_CON, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_FALSE(CS101_ASDU_isNegative(receivedASDU));
+
+    CS104_Connection_close(con);
+
+    CS104_Connection_destroy(con);
+
+    if (receivedASDU)
+        CS101_ASDU_destroy(receivedASDU);
+
+    CS104_Slave_destroy(slave);
+}
+
+bool
+test_ResetProcessHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu, uint8_t qrp)
+{
+    int* resetProcessHandlerCalled = (int*)parameter;
+
+    if (resetProcessHandlerCalled)
+    {
+        *resetProcessHandlerCalled = *resetProcessHandlerCalled + 1;
+    }
+
+    IMasterConnection_sendACT_CON(connection, asdu, false);
+
+    return true;
+}
+
+void
+test_CS104Slave_handleResetProcessCommand()
+{
+    CS101_ASDU receivedASDU = NULL;
+    int resetProcessHandlerCalled = 0;
+
+    CS104_Slave slave = CS104_Slave_create(10, 10);
+
+    CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
+    CS104_Slave_setLocalPort(slave, 20004);
+
+    CS104_Slave_start(slave);
+
+    CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+
+    CS104_Connection con = CS104_Connection_create("127.0.0.1", 20004);
+
+    bool result = CS104_Connection_connect(con);
+    TEST_ASSERT_TRUE(result);
+
+    CS104_Connection_setASDUReceivedHandler(con, test_CS104Slave_handleTestCommand_asduReceivedHandler, &receivedASDU);
+
+    CS104_Connection_sendStartDT(con);
+
+    ResetProcessCommand rpc = ResetProcessCommand_create(NULL, 0, 0);
+
+    CS101_ASDU asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) rpc);
+    ResetProcessCommand_destroy(rpc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_RP_NA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_TYPE_ID, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+
+    if (receivedASDU) {
+        CS101_ASDU_destroy(receivedASDU);
+        receivedASDU = NULL;
+    }
+
+    CS104_Slave_setResetProcessHandler(slave, test_ResetProcessHandler, &resetProcessHandlerCalled);
+
+    rpc = ResetProcessCommand_create(NULL, 0, 0);
+
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) rpc);
+    ResetProcessCommand_destroy(rpc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_RP_NA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_ACTIVATION_CON, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_FALSE(CS101_ASDU_isNegative(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(1, resetProcessHandlerCalled);
+
+    /* send reset process command with invalid IOA (!= 0) */
+
+    rpc = ResetProcessCommand_create(NULL, 1, 0);
+
+    asdu = CS101_ASDU_create(&defaultAppLayerParameters, false, CS101_COT_ACTIVATION, 0, 1, false, false);
+
+    CS101_ASDU_addInformationObject(asdu, (InformationObject) rpc);
+    ResetProcessCommand_destroy(rpc);
+    TEST_ASSERT_TRUE(CS104_Connection_sendASDU(con, asdu));
+    CS101_ASDU_destroy(asdu);
+
+    Thread_sleep(500);
+
+    TEST_ASSERT_NOT_NULL(receivedASDU);
+    TEST_ASSERT_EQUAL_INT(C_RP_NA_1, CS101_ASDU_getTypeID(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(CS101_COT_UNKNOWN_IOA, CS101_ASDU_getCOT(receivedASDU));
+    TEST_ASSERT_TRUE(CS101_ASDU_isNegative(receivedASDU));
+    TEST_ASSERT_EQUAL_INT(1, resetProcessHandlerCalled);
+
+    CS104_Connection_close(con);
+
+    CS104_Connection_destroy(con);
+
+    if (receivedASDU)
+        CS101_ASDU_destroy(receivedASDU);
+
+    CS104_Slave_destroy(slave);
+}
+
 int
 main(int argc, char** argv)
 {
@@ -6356,6 +7284,7 @@ main(int argc, char** argv)
     RUN_TEST(test_SingleEventType);
 
     RUN_TEST(test_SinglePointInformation);
+    RUN_TEST(test_SinglePointInformationSequence);
     RUN_TEST(test_SinglePointWithCP24Time2a);
     RUN_TEST(test_SinglePointWithCP56Time2a);
 
@@ -6409,11 +7338,16 @@ main(int argc, char** argv)
     RUN_TEST(test_ClockSynchronizationCommand);
     RUN_TEST(test_ResetProcessCommand);
     RUN_TEST(test_DelayAcquisitionCommand);
+    RUN_TEST(test_TestCommand);
+    RUN_TEST(test_TestCommandWithTime);
 
     RUN_TEST(test_BitString32);
     RUN_TEST(test_Bitstring32CommandWithCP56Time2a);
 
     RUN_TEST(test_QueryLog);
+
+    RUN_TEST(test_FileDirectory);
+    RUN_TEST(test_FileDirectorySingleEntry);
 
     RUN_TEST(test_BitString32xx_encodeDecode);
     RUN_TEST(test_EventOfProtectionEquipmentWithTime);
@@ -6421,6 +7355,7 @@ main(int argc, char** argv)
 
     RUN_TEST(test_CS104SlaveConnectionIsRedundancyGroup);
     RUN_TEST(test_CS104SlaveSingleRedundancyGroup);
+    RUN_TEST(test_CS104SlaveSingleRedundancyGroupMultipleConnections);
 
     RUN_TEST(test_CS104SlaveEventQueue1);
     RUN_TEST(test_CS104SlaveEventQueueOverflow);
@@ -6458,6 +7393,20 @@ main(int argc, char** argv)
 
     RUN_TEST(test_ASDUsetGetNumberOfElements);
     RUN_TEST(test_CS101_ASDU_clone);
+
+    RUN_TEST(test_CS104SlaveUnconfirmedStoppedMode);
+
+    RUN_TEST(test_ScaledNormalizedConversion);
+
+    RUN_TEST(test_CS104Connection_cannotWriteToSocketWhenNotConnected);
+
+    RUN_TEST(test_CS104Slave_handleTestCommandWithTimestamp);
+
+    RUN_TEST(test_CS104Slave_rejectCommandsWithBroadcastCA);
+
+    RUN_TEST(test_CS104Slave_rejectCommandWithUnknownCA);
+
+    RUN_TEST(test_CS104Slave_handleResetProcessCommand);
 
     return UNITY_END();
 }

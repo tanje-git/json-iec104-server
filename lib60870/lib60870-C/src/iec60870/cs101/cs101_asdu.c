@@ -175,16 +175,20 @@ CS101_ASDU_encode(CS101_ASDU self, Frame frame)
 }
 
 CS101_ASDU
-CS101_ASDU_createFromBuffer(CS101_AppLayerParameters parameters, uint8_t* msg, int msgLength)
+CS101_ASDU_createFromBufferEx(CS101_ASDU asdu, CS101_AppLayerParameters parameters, uint8_t* msg, int msgLength)
 {
     int asduHeaderLength = 2 + parameters->sizeOfCOT + parameters->sizeOfCA;
 
     if (msgLength < asduHeaderLength)
         return NULL;
 
-    CS101_ASDU self = (CS101_ASDU) GLOBAL_MALLOC(sizeof(struct sCS101_ASDU));
+    CS101_ASDU self = (CS101_ASDU)asdu;
 
-    if (self != NULL) {
+    if (self == NULL)
+        self = (CS101_ASDU) GLOBAL_MALLOC(sizeof(struct sCS101_ASDU));
+
+    if (self)
+    {
         self->parameters = parameters;
 
         self->asdu = msg;
@@ -195,6 +199,12 @@ CS101_ASDU_createFromBuffer(CS101_AppLayerParameters parameters, uint8_t* msg, i
     }
 
     return self;
+}
+
+CS101_ASDU
+CS101_ASDU_createFromBuffer(CS101_AppLayerParameters parameters, uint8_t* msg, int msgLength)
+{
+    return CS101_ASDU_createFromBufferEx(NULL, parameters, msg, msgLength);
 }
 
 uint8_t*
@@ -252,26 +262,28 @@ CS101_ASDU_addInformationObject(CS101_ASDU self, InformationObject io)
 
     int numberOfElements = CS101_ASDU_getNumberOfElements(self);
 
-    if (numberOfElements == 0) {
+    if (numberOfElements == 0)
+    {
         self->asdu[0] = (uint8_t) InformationObject_getType(io);
 
         encoded = InformationObject_encode(io, (Frame) &asduFrame, self->parameters, false);
     }
-    else if (numberOfElements < 0x7f) {
-
+    else if (numberOfElements < 0x7f)
+    {
         /* Check if type of information object is matching ASDU type */
 
-        if (self->asdu[0] == (uint8_t) InformationObject_getType(io)) {
-
-            if (CS101_ASDU_isSequence(self)) {
-
+        if (self->asdu[0] == (uint8_t) InformationObject_getType(io))
+        {
+            if (CS101_ASDU_isSequence(self))
+            {
                 /* check that new information object has correct IOA */
                 if (InformationObject_getObjectAddress(io) == (getFirstIOA(self) + CS101_ASDU_getNumberOfElements(self)))
                     encoded = InformationObject_encode(io, (Frame) &asduFrame, self->parameters, true);
                 else
                     encoded = false;
             }
-            else {
+            else
+            {
                 encoded = InformationObject_encode(io, (Frame) &asduFrame, self->parameters, false);;
             }
         }

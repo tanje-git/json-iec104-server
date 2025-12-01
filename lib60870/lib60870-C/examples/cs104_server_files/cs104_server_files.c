@@ -97,24 +97,29 @@ interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU a
 static bool
 asduHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu)
 {
-    if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1) {
+    if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1)
+    {
         printf("received single command\n");
 
-        if  (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION) {
+        if  (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION)
+        {
             InformationObject io = CS101_ASDU_getElement(asdu, 0);
 
-            if (InformationObject_getObjectAddress(io) == 5000) {
-                SingleCommand sc = (SingleCommand) io;
+            if (io)
+            {
+                if (InformationObject_getObjectAddress(io) == 5000) {
+                    SingleCommand sc = (SingleCommand) io;
 
-                printf("IOA: %i switch to %i\n", InformationObject_getObjectAddress(io),
-                        SingleCommand_getState(sc));
+                    printf("IOA: %i switch to %i\n", InformationObject_getObjectAddress(io),
+                            SingleCommand_getState(sc));
 
-                CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
+                    CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
+                }
+                else
+                    CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
+
+                InformationObject_destroy(io);
             }
-            else
-                CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
-
-            InformationObject_destroy(io);
         }
         else
             CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_COT);
@@ -362,7 +367,7 @@ main(int argc, char** argv)
 
     CS104_Slave_addPlugin(slave, CS101_FileServer_getSlavePlugin(fileServer));
 
-    CS104_Slave_startThreadless(slave);
+    CS104_Slave_start(slave);
 
     if (CS104_Slave_isRunning(slave) == false) {
         printf("Starting server failed!\n");
@@ -373,10 +378,8 @@ main(int argc, char** argv)
 
     uint64_t nextSendTime = Hal_getTimeInMs() + 1000;
 
-    while (running) {
-
-        CS104_Slave_tick(slave);
-
+    while (running)
+    {
         if (Hal_getTimeInMs() >= nextSendTime) {
 
             nextSendTime += 1000;
@@ -398,7 +401,7 @@ main(int argc, char** argv)
         Thread_sleep(1);
     }
 
-    CS104_Slave_stopThreadless(slave);
+    CS104_Slave_stop(slave);
 
 exit_program:
     CS104_Slave_destroy(slave);

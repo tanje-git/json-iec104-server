@@ -282,6 +282,11 @@ StatusAndStatusChangeDetection_getST(const StatusAndStatusChangeDetection self, 
 bool
 StatusAndStatusChangeDetection_getCD(const StatusAndStatusChangeDetection self, int index);
 
+float
+NormalizedValue_fromScaled(int scaledValue);
+
+int
+NormalizedValue_toScaled(float normalizedValue);
 
 /************************************************
  * InformationObject
@@ -2047,7 +2052,7 @@ FileSegment_destroy(FileSegment self);
 typedef struct sFileDirectory* FileDirectory;
 
 FileDirectory
-FileDirectory_create(FileDirectory self, int ioa, uint16_t nof, int lengthOfFile, uint8_t sof, const CP56Time2a creationTime);
+FileDirectory_create(FileDirectory self, int ioa, uint16_t nof, uint32_t lengthOfFile, uint8_t sof, const CP56Time2a creationTime);
 
 uint16_t
 FileDirectory_getNOF(FileDirectory self);
@@ -2067,7 +2072,7 @@ FileDirectory_getFOR(FileDirectory self);
 bool
 FileDirectory_getFA(FileDirectory self);
 
-uint8_t
+uint32_t
 FileDirectory_getLengthOfFile(FileDirectory self);
 
 CP56Time2a

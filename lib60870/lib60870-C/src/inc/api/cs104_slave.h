@@ -1,7 +1,7 @@
 /*
  *  cs104_slave.h
  *
- *  Copyright 2017-2022 Michael Zillgith
+ *  Copyright 2017-2025 Michael Zillgith
  *
  *  This file is part of lib60870-C
  *
@@ -180,6 +180,16 @@ void
 CS104_Slave_setServerMode(CS104_Slave self, CS104_ServerMode serverMode);
 
 /**
+ * \brief Set a callback handler for the library to check if a specific CA is known by the application
+ *
+ * \param self the slave instance
+ * \param handler the callback function to be used
+ * \param parameter user provided context parameter that will be passed to the callback function (or NULL if not required).
+ */
+void
+CS104_Slave_setAllowedCAHandler(CS104_Slave self, CS101_IsCAAllowedHandler handler, void* parameter);
+
+/**
  * \brief Set the connection request handler
  *
  * The connection request handler is called whenever a client/master is trying to connect.
@@ -206,23 +216,73 @@ CS104_Slave_setConnectionRequestHandler(CS104_Slave self, CS104_ConnectionReques
 void
 CS104_Slave_setConnectionEventHandler(CS104_Slave self, CS104_ConnectionEventHandler handler, void* parameter);
 
+/**
+ * \brief Set the handler for the general interrogation message
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
 void
 CS104_Slave_setInterrogationHandler(CS104_Slave self, CS101_InterrogationHandler handler, void*  parameter);
 
+/**
+ * \brief Set the handler for the counter interrogation message
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
 void
 CS104_Slave_setCounterInterrogationHandler(CS104_Slave self, CS101_CounterInterrogationHandler handler, void*  parameter);
 
 /**
  * \brief set handler for read request (C_RD_NA_1 - 102)
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
  */
 void
 CS104_Slave_setReadHandler(CS104_Slave self, CS101_ReadHandler handler, void* parameter);
 
+/**
+ * \brief Set the handler for a received ASDU
+ *
+ * NOTE: This a generic handler that will only be called when the ASDU has not been handled by
+ * one of the other callback handlers.
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
 void
 CS104_Slave_setASDUHandler(CS104_Slave self, CS101_ASDUHandler handler, void* parameter);
 
+/**
+ * \brief Set the handler for the clock synchronization message
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
 void
 CS104_Slave_setClockSyncHandler(CS104_Slave self, CS101_ClockSynchronizationHandler handler, void* parameter);
+
+/**
+ * \brief Set the handler for the reset process message (C_RP_NA_1)
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
+void
+CS104_Slave_setResetProcessHandler(CS104_Slave self, CS101_ResetProcessHandler handler, void* parameter);
+
+/**
+ * \brief Set the handler for the delay acquisition message (C_CD_NA_1)
+ *
+ * \note Do not use! The delay acquisition command is not allowed for CS 104.
+ *
+ * \param handler the callback handler function
+ * \param parameter user provided parameter to be passed to the callback handler
+ */
+void
+CS104_Slave_setDelayAcquisitionHandler(CS104_Slave self, CS101_DelayAcquisitionHandler handler, void* parameter);
 
 /**
  * \brief Set the raw message callback (called when a message is sent or received)
