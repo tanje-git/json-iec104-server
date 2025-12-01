@@ -33,6 +33,11 @@ struct sM_ME_TD_1 {
     QualityDescriptor qualifier;
 } M_ME_TD_1_data[NUMBERS_OF_M_ME_TD_1];
 
+struct sM_ME_NC_1 {
+    float value;
+    QualityDescriptor qualifier;
+} M_ME_NC_1_data[NUMBERS_OF_M_ME_NC_1];
+
 static CS101_AppLayerParameters appLayerParameters;
 struct sBinaryCounterReading M_IT_TB_1_data[NUMBERS_OF_M_IT_TB_1];
 bool running = true;
@@ -41,10 +46,12 @@ pthread_mutex_t M_IT_TB_1_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t M_SP_TB_1_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t M_DP_TB_1_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t M_ME_TD_1_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t M_ME_NC_1_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool update_m_sp_tb_1_data(int address, bool value, int qualifier);
 static bool update_m_dp_tb_1_data(int address, DoublePointValue value, int qualifier);
 static bool update_m_me_td_1_data(int address, float value, int qualifier);
+static bool update_m_me_nc_1_data(int address, float value, int qualifier);
 static void update_m_it_tb_1_data(int address, uint32_t value);
 
 static bool IsClientConnected(CS104_Slave self)
@@ -567,6 +574,23 @@ int main(int argc, char** argv)
                     }
                     break;
                 }
+                case M_ME_NC_1: {
+                    if(0 <= address && address < NUMBERS_OF_M_ME_NC_1) {
+                        if (update_m_me_nc_1_data(address, (float)value, qualifier) == true && IsClientConnected(slave) == true) {
+                            CS101_ASDU newAsdu = CS101_ASDU_create(
+                                appLayerParameters, false, CS101_COT_SPONTANEOUS, ASDU, ASDU, false, false);
+                            InformationObject io = (InformationObject) MeasuredValueShort_create(
+                                    NULL, BASE_ADDRESS_M_ME_NC_1 + address, (float)(value), qualifier);
+                            CS101_ASDU_addInformationObject(newAsdu, io);
+                            InformationObject_destroy(io);
+                            CS104_Slave_enqueueASDU(slave, newAsdu);
+                            CS101_ASDU_destroy(newAsdu);
+                        }
+                    } else {
+                        printf("{\"error\":\"TI13 address not in range\"}\n");
+                    }
+                    break;
+                }
                 case M_IT_TB_1: {
                     if(0 <= address && address < NUMBERS_OF_M_IT_TB_1) {
                         update_m_it_tb_1_data(address, (uint64_t)(value) % UINT32_MAX);
@@ -659,6 +683,27 @@ static bool update_m_me_td_1_data(int address, float value, int qualifier)
     }
     
     pthread_mutex_unlock(&M_ME_TD_1_mutex);
+
+    return rc;
+}
+
+static bool update_m_me_nc_1_data(int address, float value, int qualifier)
+{
+    bool rc = false;
+
+    pthread_mutex_lock(&M_ME_NC_1_mutex);
+
+    if(M_ME_NC_1_data[address].value != value) {
+        M_ME_NC_1_data[address].value = value;
+        rc = true;
+    }
+
+    if(M_ME_NC_1_data[address].qualifier != qualifier) {
+        M_ME_NC_1_data[address].qualifier = qualifier;
+        rc = true;
+    }
+    
+    pthread_mutex_unlock(&M_ME_NC_1_mutex);
 
     return rc;
 }
